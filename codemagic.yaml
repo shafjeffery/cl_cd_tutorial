@@ -2,13 +2,15 @@ workflows:
   android-workflow:
     name: Android Workflow
     instance_type: mac_mini_m1
-    max_build_duration: 120
+    max_build_duration: 30
     environment:
       android_signing:
         - keystore_reference
       groups:
         - google_play # <-- (Includes GCLOUD_SERVICE_ACCOUNT_CREDENTIALS)
+        - google_credentials
       vars:
+        FIREBASE_PROJECT: ci-cd-mobile
         PACKAGE_NAME: "io.codemagic.flutteryaml" # <-- Put your package name here
         GOOGLE_PLAY_TRACK: "alpha"
       flutter: stable
@@ -19,6 +21,27 @@ workflows:
       - name: Get Flutter packages
         script: |
           flutter packages pub get
+      - name: Build APK with Flutter
+        script: |
+          flutter build apk --debug
+      - name: Create debug and test APK
+          set -ex
+          cd android
+          ./gradlew app:assembleAndroidTest
+          ./gradlew app:assembleDebug -Ptarget="$CM_BUILD_DIR/integration_test/app_test.dart"
+      - name: Run Firebase Test Lab Tests
+        script: |
+          set -ex
+          echo $GCLOUD_KEY_FILE | base64 --decode > ./gcloud_key_file.json
+          gcloud auth activate-service-account --key-file=gcloud_key_file.json
+          gcloud --quite config set project $FIREBASE_PROJECT
+
+          gcloud firebase test android run \
+            --type instrumentation \
+            --app build/app/outputs/apk/debug/app-debug.apk \
+            --test build/app/outputs/apk/androidTest/debug/app-debug-androidTest.apk \
+            --timeout 3m
+
       - name: Flutter analyze
         script: |
           flutter analyze
@@ -33,9 +56,11 @@ workflows:
             --build-name=1.0.$BUILD_NUMBER \
             --build-number=$BUILD_NUMBER
     artifacts:
+      - build/**/outputs/**/*.apk
       - build//outputs//*.aab
       - build//outputs//mapping.txt
       - flutter_drive.log
+      
     publishing:
       email:
         recipients:
